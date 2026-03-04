@@ -1,8 +1,23 @@
-import express from "express";
-import { identify } from "../controllers/identifyController";
+import { Request, Response } from "express";
+import { handleIdentity } from "../services/identityService";
 
-const router = express.Router();
+export const identify = async (req: Request, res: Response): Promise<void> => {
+    try {
+        const { email, phoneNumber } = req.body;
 
-router.post("/", identify);
+        if (!email && !phoneNumber) {
+            res.status(400).json({ error: "At least one of email or phoneNumber is required." });
+            return;
+        }
 
-export default router;
+        const result = await handleIdentity(
+            email ?? undefined,
+            phoneNumber !== undefined && phoneNumber !== null ? String(phoneNumber) : undefined
+        );
+
+        res.status(200).json(result);
+    } catch (err) {
+        console.error("Error in /identify:", err);
+        res.status(500).json({ error: "Internal server error" });
+    }
+};

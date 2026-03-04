@@ -2,82 +2,143 @@ import prisma from "../prisma/prismaClient";
 
 export const handleIdentity = async (email?: string, phoneNumber?: string) => {
 
- const existingContacts = await prisma.contact.findMany({
-  where: {
-   OR: [
-    { email: email || undefined },
-    { phoneNumber: phoneNumber || undefined }
-   ]
-  }
- });
+    // Step 1: Find all existing contacts that match the given email OR phone
+    const existingContacts = await prisma.contact.findMany({
+        where: {
+            OR: [
+                ...(email ? [{ email }] : []),
+                ...(phoneNumber ? [{ phoneNumber }] : []),
+            ],
+        },
+    });
 
- if (existingContacts.length === 0) {
+    // Step 2: No existing contact → create a new primary contact
+    if (existingContacts.length === 0) {
+        const newContact = await prisma.contact.create({
+            data: {
+                email: email ?? null,
+                phoneNumber: phoneNumber ?? null,
+                linkPrecedence: "primary",
+            },
+        });
 
-  const newContact = await prisma.contact.create({
-   data: {
-    email,
-    phoneNumber,
-    linkPrecedence: "primary"
-   }
-  });
+        return {
+            contact: {
+                primaryContactId: newContact.id,
+                emails: email ? [email] : [],
+                phoneNumbers: phoneNumber ? [phoneNumber] : [],
+                secondaryContactIds: [],
+            },
+        };
+    }
 
-  return {
-   contact: {
-    primaryContactId: newContact.id,
-    emails: [email],
-    phoneNumbers: [phoneNumber],
-    secondaryContactIds: []
-   }
-  };
- }
+    // Step 3: Resolve true primary IDs from matched contacts
+    // A contact is a secondary if it has a linkedId; its true primary is its linkedId
+    const primaryIds = new Set<number>();
+    for (const c of existingContacts) {
+        if (c.linkPrecedence === "primary") {
+            primaryIds.add(c.id);
+        } else if (c.linkedId) {
+            primaryIds.add(c.linkedId);
+        }
+    }
 
- let primaryContact =
-  existingContacts.find(c => c.linkPrecedence === "primary") ||
-  existingContacts[0];
+    // Step 4: Fetch full clusters for all resolved primaries
+    const allLinkedContacts = await prisma.contact.findMany({
+        where: {
+            OR: [
+                { id: { in: Array.from(primaryIds) } },
+                { linkedId: { in: Array.from(primaryIds) } },
+            ],
+        },
+        orderBy: { createdAt: "asc" },
+    });
 
- const primaryId = primaryContact.linkedId || primaryContact.id;
+    // Step 5: Determine the single oldest primary (the true root)
+    const primaries = allLinkedContacts
+        .filter((c) => c.linkPrecedence === "primary")
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
- const allLinkedContacts = await prisma.contact.findMany({
-  where: {
-   OR: [
-    { id: primaryId },
-    { linkedId: primaryId }
-   ]
-  }
- });
+    const truePrimary = primaries[0]; // oldest = real primary
 
- const emails = new Set<string>();
- const phones = new Set<string>();
- const secondaryIds: number[] = [];
+    // Step 6: Demote any newer primaries to secondary
+    const newerPrimaries = primaries.slice(1);
+    if (newerPrimaries.length > 0) {
+        await prisma.contact.updateMany({
+            where: {
+                id: { in: newerPrimaries.map((c) => c.id) },
+            },
+            data: {
+                linkedId: truePrimary.id,
+                linkPrecedence: "secondary",
+                updatedAt: new Date(),
+            },
+        });
 
- allLinkedContacts.forEach(contact => {
-  if (contact.email) emails.add(contact.email);
-  if (contact.phoneNumber) phones.add(contact.phoneNumber);
-  if (contact.linkPrecedence === "secondary") secondaryIds.push(contact.id);
- });
+        // Also re-parent any secondaries that pointed to the now-demoted primaries
+        await prisma.contact.updateMany({
+            where: {
+                linkedId: { in: newerPrimaries.map((c) => c.id) },
+            },
+            data: {
+                linkedId: truePrimary.id,
+                updatedAt: new Date(),
+            },
+        });
+    }
 
- if (email && !emails.has(email) || phoneNumber && !phones.has(phoneNumber)) {
+    // Step 7: Re-fetch the entire cluster after potential demotion
+    const finalCluster = await prisma.contact.findMany({
+        where: {
+            OR: [
+                { id: truePrimary.id },
+                { linkedId: truePrimary.id },
+            ],
+        },
+        orderBy: { createdAt: "asc" },
+    });
 
-  const newSecondary = await prisma.contact.create({
-   data: {
-    email,
-    phoneNumber,
-    linkedId: primaryId,
-    linkPrecedence: "secondary"
-   }
-  });
+    // Step 8: Collect all unique emails and phones (primary's values come first)
+    const emails: string[] = [];
+    const phones: string[] = [];
+    const secondaryIds: number[] = [];
 
-  secondaryIds.push(newSecondary.id);
-  if (email) emails.add(email);
-  if (phoneNumber) phones.add(phoneNumber);
- }
+    // Add primary's data first
+    if (truePrimary.email) emails.push(truePrimary.email);
+    if (truePrimary.phoneNumber) phones.push(truePrimary.phoneNumber);
 
- return {
-  contact: {
-   primaryContactId: primaryId,
-   emails: Array.from(emails),
-   phoneNumbers: Array.from(phones),
-   secondaryContactIds: secondaryIds
-  }
- };
+    for (const c of finalCluster) {
+        if (c.id === truePrimary.id) continue;
+        if (c.email && !emails.includes(c.email)) emails.push(c.email);
+        if (c.phoneNumber && !phones.includes(c.phoneNumber)) phones.push(c.phoneNumber);
+        secondaryIds.push(c.id);
+    }
+
+    // Step 9: Check if the incoming request brings new info not seen in the cluster
+    const emailIsNew = email && !emails.includes(email);
+    const phoneIsNew = phoneNumber && !phones.includes(phoneNumber);
+
+    if (emailIsNew || phoneIsNew) {
+        const newSecondary = await prisma.contact.create({
+            data: {
+                email: email ?? null,
+                phoneNumber: phoneNumber ?? null,
+                linkedId: truePrimary.id,
+                linkPrecedence: "secondary",
+            },
+        });
+
+        if (email && emailIsNew) emails.push(email);
+        if (phoneNumber && phoneIsNew) phones.push(phoneNumber);
+        secondaryIds.push(newSecondary.id);
+    }
+
+    return {
+        contact: {
+            primaryContactId: truePrimary.id,
+            emails,
+            phoneNumbers: phones,
+            secondaryContactIds: secondaryIds,
+        },
+    };
 };
