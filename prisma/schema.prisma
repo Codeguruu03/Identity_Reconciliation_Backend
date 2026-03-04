@@ -1,11 +1,13 @@
 datasource db {
- provider = "postgresql"
- url      = env("DATABASE_URL")
+  provider = "postgresql"
 }
 
+
 generator client {
- provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
 }
+
 
 model Contact {
  id             Int       @id @default(autoincrement())
