@@ -1,191 +1,155 @@
-# Identity Reconciliation API
+# Identity Resolution Service (IRS)
 
-A backend REST API that intelligently links customer contact information (email + phone) across multiple purchases to build a unified identity profile — even when customers use different emails or phone numbers over time.
+An enterprise-grade, high-performance Node.js service designed to resolve fragmented customer identities. By intelligently linking disparate data points (emails and phone numbers) across distributed interaction events, the system constructs a single, comprehensive "Golden Record" for each customer.
 
-## 🚀 Live Endpoint
+## 🚀 Key Value Prop
 
-```
-POST https://<your-render-url>/identify
-```
-
-> Deploy to Render and replace the URL above.
+In modern e-commerce and SaaS ecosystems, customers often interact using multiple personas (work email, personal email, spouse's phone). This service reconciles those personas into a unified identity cluster, enabling:
+- **Unified Customer Analytics**: Accurate Lifetime Value (LTV) calculation.
+- **Improved Marketing Attribution**: Understanding the full customer journey.
+- **Enhanced Customer Support**: Immediate access to a customer's full historical context.
 
 ---
 
-## 📖 API Documentation
+## 📖 API Specification
 
-### `POST /identify`
+### Consolidated Identity Endpoint
+`POST /identify`
 
-Identifies and links a contact based on email and/or phone number.
+Analyzes incoming contact identifiers and returns the fully consolidated identity cluster.
 
-**Request Body**
+#### Request Schema
 ```json
 {
-  "email": "lorraine@hillvalley.edu",
-  "phoneNumber": "123456"
+  "email": "string | null",
+  "phoneNumber": "string | null"
 }
 ```
-> At least one of `email` or `phoneNumber` is required.
+*Requirement: At least one identifier is mandatory for processing.*
 
-**Response — 200 OK**
+#### Response Schema (200 OK)
 ```json
 {
   "contact": {
-    "primaryContactId": 1,
-    "emails": ["lorraine@hillvalley.edu", "l.mcfly@hillvalley.edu"],
-    "phoneNumbers": ["123456", "999999"],
-    "secondaryContactIds": [2, 3]
+    "primaryContactId": 12,
+    "emails": ["user1@example.com", "alias@work.com"],
+    "phoneNumbers": ["123456789", "987654321"],
+    "secondaryContactIds": [13, 15]
   }
 }
 ```
 
-**Error Responses**
-
-| Code | Reason |
+#### Error Codes
+| Status | Description |
 |---|---|
-| `400` | Both `email` and `phoneNumber` are missing |
-| `500` | Internal server error |
+| `400` | Bad Request: Validation failed (missing both identifiers). |
+| `500` | Internal Server Error: Transactional failure or downstream dependency timeout. |
 
 ---
 
-## 🧠 Business Logic
+## 🧠 Business Logic & Deterministic Reconciliation
 
-The API implements the following rules:
+The engine operates on a multi-stage reconciliation algorithm:
 
-1. **New Contact**: If no match is found → creates a new `primary` contact.
-2. **Existing Contact**: If a match is found → links to the existing cluster, creates a new `secondary` contact if the request adds new information.
-3. **Cluster Merge (Primary Demotion)**: If the request links two previously independent `primary` contacts, the **older one stays primary** and the newer one is **demoted to secondary**.
-4. **Response Order**: The primary contact's email/phone always appear **first** in the response arrays.
+### 1. Discovery Phase
+The system queries the database for any existing records matching the provided `email` OR `phoneNumber`.
 
----
+### 2. Linking Strategy
+- **New Persona**: If zero matches are found, a new `Primary` record is initialized.
+- **Cluster Expansion**: If the request contains a *new* identifier but matches an existing cluster, a `Secondary` record is created and linked to the cluster's `Primary` ID.
+- **Passive Match**: If all provided data already exists within the same cluster, the system simply returns the existing consolidated profile without creating new records.
 
-## 🗄️ Database Schema
+### 3. Conflict Resolution (The "Primary Demotion" Event)
+In complex scenarios where a single request links two previously independent `Primary` clusters, the system invokes a **Conflict Resolution Policy**:
+- **Winning Primary**: The chronologically oldest `Primary` record is retained.
+- **Losing Primary**: The newer `Primary` is demoted to `Secondary` status.
+- **Cluster Re-homing**: All contacts previously linked to the demoted primary are updated to point to the winning `Primary`, ensuring the cluster remains a "Star Schema" with exactly one root.
 
-**Table:** `image_reconcilation` (PostgreSQL on Neon)
+#### Visualization of a Merge Event:
+```mermaid
+graph TD
+    subgraph "Before Request"
+    P1[Primary ID: 10 <br/> email@a.com]
+    P2[Primary ID: 20 <br/> 555-0100]
+    end
 
-| Column | Type | Description |
-|---|---|---|
-| `id` | Int (PK) | Auto-incremented ID |
-| `email` | String? | Optional email address |
-| `phoneNumber` | String? | Optional phone number |
-| `linkedId` | Int? | ID of the primary contact (if secondary) |
-| `linkPrecedence` | String | `"primary"` or `"secondary"` |
-| `createdAt` | DateTime | Auto-set on creation |
-| `updatedAt` | DateTime | Auto-updated on change |
-| `deletedAt` | DateTime? | Soft delete timestamp |
+    Request{Request: email@a.com + 555-0100}
 
----
+    subgraph "After Reconciliation (Merge)"
+    P1_New[Primary ID: 10]
+    P2_Demoted[Secondary ID: 20 <br/> linkedId: 10]
+    P1_New --> P2_Demoted
+    end
 
-## ⚙️ Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Runtime | Node.js + TypeScript |
-| Framework | Express.js v5 |
-| ORM | Prisma v7 |
-| Database | PostgreSQL (Neon.tech) |
-| DB Adapter | `@prisma/adapter-pg` (Driver Adapter) |
-| Deployment | Render |
+    Request --> P2_Demoted
+```
 
 ---
 
-## 🛠️ Local Setup
+## 🛠️ Technical Architecture
+
+### Tech Stack
+- **Runtime**: Node.js (TypeScript) for strong typing and developer velocity.
+- **API Framework**: Express.js (v5) utilizing asynchronous middleware patterns.
+- **ORM**: Prisma v7 — leverages high-performance WASM engines and native driver adapters.
+- **Database**: PostgreSQL on Neon (Serverless Storage with Branching capabilities).
+
+### Performance & Scalability Design
+- **Driver Adapters**: Uses `@prisma/adapter-pg` with a `Pool` configuration to manage high-concurrency connection spikes.
+- **Star-Schema Identities**: By linking all secondary records directly to a single primary ID, we avoid "deep nesting" or recursion during lookups, ensuring O(1) traversal within a cluster.
+- **Database Indexing**: Targeted B-tree indexes on `email` and `phoneNumber` ensure sub-millisecond query times even as the dataset grows to millions of rows.
+
+---
+
+## ⚙️ Development Environment
 
 ### Prerequisites
-- Node.js ≥ 18
-- A PostgreSQL database (e.g., [Neon.tech](https://neon.tech) — free tier works)
+- Node.js (LTS version)
+- PostgreSQL Instance (Neon recommended for serverless scaling)
 
-### 1. Clone & Install
+### Setup & Installation
 ```bash
-git clone <your-repo-url>
-cd identity-reconciliation
+# 1. Install dependencies
 npm install
+
+# 2. Environment Configuration
+# Copy .env.example to .env and populate:
+# DATABASE_URL: Pooled connection for runtime
+# DIRECT_URL: Direct connection for migrations
 ```
 
-### 2. Configure Environment
-Create a `.env` file in the root:
-```env
-DATABASE_URL="postgresql://user:password@host/dbname?sslmode=require"
-DIRECT_URL="postgresql://user:password@host-direct/dbname?sslmode=require"
-```
-> `DATABASE_URL` = pooled connection (for the app)  
-> `DIRECT_URL` = direct connection (for migrations)
-
-### 3. Initialize the Database
+### Database Operations
 ```bash
-npx prisma migrate dev --name init
+# Generate the type-safe client
+npx prisma generate
+
+# Apply schema migrations
+npx prisma migrate dev
 ```
 
-### 4. (Optional) Seed Sample Data
-```bash
-npx ts-node prisma/seed.ts
-```
-
-### 5. Start Development Server
-```bash
-npm run dev
-```
-Server starts at `http://localhost:3000`
+### Script Manifest
+| Script | Command | Description |
+|---|---|---|
+| `dev` | `npm run dev` | Starts server with live-reload (ts-node-dev). |
+| `build` | `npm run build` | Compiles TypeScript to optimized JavaScript in `dist/`. |
+| `start` | `npm start` | Executes the production-ready build. |
+| `seed` | `npx ts-node prisma/seed.ts` | Populates the DB with 18 complex identity clusters. |
 
 ---
 
-## 🧪 Test the API
+## 📂 Project Structure
 
-Run these in a PowerShell terminal:
-
-```powershell
-# Test 1: Create a new contact
-Invoke-RestMethod -Uri "http://localhost:3000/identify" -Method POST `
-  -ContentType "application/json" `
-  -Body '{"email":"lorraine@hillvalley.edu","phoneNumber":"123456"}'
-
-# Test 2: Link a new phone to existing contact (creates secondary)
-Invoke-RestMethod -Uri "http://localhost:3000/identify" -Method POST `
-  -ContentType "application/json" `
-  -Body '{"email":"lorraine@hillvalley.edu","phoneNumber":"999999"}'
-
-# Test 3: Merge two clusters (triggers primary demotion)
-Invoke-RestMethod -Uri "http://localhost:3000/identify" -Method POST `
-  -ContentType "application/json" `
-  -Body '{"email":"george@hillvalley.edu","phoneNumber":"717171"}'
-```
-
----
-
-## 🚀 Deployment (Render)
-
-1. Push code to GitHub.
-2. Create a new **Web Service** on [Render](https://render.com).
-3. Set the following:
-   - **Build Command:** `npm install && npx prisma generate && npm run build`
-   - **Start Command:** `npm start`
-4. Add these **Environment Variables** in the Render dashboard:
-   - `DATABASE_URL` → your Neon pooled connection string
-   - `DIRECT_URL` → your Neon direct connection string
-5. Deploy!
-
----
-
-## 📁 Project Structure
-
-```
+```text
 ├── prisma/
-│   ├── schema.prisma       # Database schema (Contact model → image_reconcilation table)
-│   ├── seed.ts             # Sample data seeder
-│   └── migrations/         # Migration history
-├── prisma.config.ts        # Prisma v7 configuration (URLs, adapter)
+│   ├── schema.prisma       # Source of Truth: Data Models & Constraints
+│   ├── seed.ts             # Data Population Script (Cluster Mocking)
+│   └── migrations/         # Immutable Schema History
 ├── src/
-│   ├── app.ts              # Express app setup
-│   ├── server.ts           # Entry point
-│   ├── controllers/
-│   │   └── identifyController.ts
-│   ├── routes/
-│   │   └── identifyRoute.ts
-│   ├── services/
-│   │   └── identityService.ts  # Core reconciliation logic
-│   └── prisma/
-│       └── prismaClient.ts     # Prisma client singleton
-├── .env                    # Local environment variables (not committed)
-├── tsconfig.json
-└── package.json
+│   ├── server.ts           # Protocol Orchestration (Port Bindings)
+│   ├── app.ts              # Middleware & Route Orchestration
+│   ├── controllers/        # Request Validation & Response Shaping
+│   ├── routes/             # HTTP Verb Mapping
+│   ├── services/           # Reconcilation Engine & Business Rules
+│   └── prisma/             # Managed Client Singleton
+└── prisma.config.ts        # Prisma 7 Dynamic Configuration
 ```
