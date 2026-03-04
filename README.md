@@ -1,6 +1,6 @@
-# Identity Reconciliation — Bitespeed Backend
+# Identity Reconciliation API
 
-A Node.js + TypeScript + Express + Prisma (PostgreSQL) backend that identifies and consolidates customer identities across multiple purchases even when different contact details are used.
+A backend REST API that intelligently links customer contact information (email + phone) across multiple purchases to build a unified identity profile — even when customers use different emails or phone numbers over time.
 
 ## 🚀 Live Endpoint
 
@@ -8,94 +8,184 @@ A Node.js + TypeScript + Express + Prisma (PostgreSQL) backend that identifies a
 POST https://<your-render-url>/identify
 ```
 
-> ⚠️ Update this URL after deploying on Render.
+> Deploy to Render and replace the URL above.
 
-## 📡 API
+---
+
+## 📖 API Documentation
 
 ### `POST /identify`
 
-**Request Body:**
+Identifies and links a contact based on email and/or phone number.
+
+**Request Body**
 ```json
 {
-  "email": "mcfly@hillvalley.edu",
+  "email": "lorraine@hillvalley.edu",
   "phoneNumber": "123456"
 }
 ```
-*(At least one of `email` or `phoneNumber` is required)*
+> At least one of `email` or `phoneNumber` is required.
 
-**Response:**
+**Response — 200 OK**
 ```json
 {
   "contact": {
     "primaryContactId": 1,
-    "emails": ["lorraine@hillvalley.edu", "mcfly@hillvalley.edu"],
-    "phoneNumbers": ["123456"],
-    "secondaryContactIds": [23]
+    "emails": ["lorraine@hillvalley.edu", "l.mcfly@hillvalley.edu"],
+    "phoneNumbers": ["123456", "999999"],
+    "secondaryContactIds": [2, 3]
   }
 }
 ```
 
-## ⚙️ Local Setup
+**Error Responses**
+
+| Code | Reason |
+|---|---|
+| `400` | Both `email` and `phoneNumber` are missing |
+| `500` | Internal server error |
+
+---
+
+## 🧠 Business Logic
+
+The API implements the following rules:
+
+1. **New Contact**: If no match is found → creates a new `primary` contact.
+2. **Existing Contact**: If a match is found → links to the existing cluster, creates a new `secondary` contact if the request adds new information.
+3. **Cluster Merge (Primary Demotion)**: If the request links two previously independent `primary` contacts, the **older one stays primary** and the newer one is **demoted to secondary**.
+4. **Response Order**: The primary contact's email/phone always appear **first** in the response arrays.
+
+---
+
+## 🗄️ Database Schema
+
+**Table:** `image_reconcilation` (PostgreSQL on Neon)
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | Int (PK) | Auto-incremented ID |
+| `email` | String? | Optional email address |
+| `phoneNumber` | String? | Optional phone number |
+| `linkedId` | Int? | ID of the primary contact (if secondary) |
+| `linkPrecedence` | String | `"primary"` or `"secondary"` |
+| `createdAt` | DateTime | Auto-set on creation |
+| `updatedAt` | DateTime | Auto-updated on change |
+| `deletedAt` | DateTime? | Soft delete timestamp |
+
+---
+
+## ⚙️ Tech Stack
+
+| Layer | Technology |
+|---|---|
+| Runtime | Node.js + TypeScript |
+| Framework | Express.js v5 |
+| ORM | Prisma v7 |
+| Database | PostgreSQL (Neon.tech) |
+| DB Adapter | `@prisma/adapter-pg` (Driver Adapter) |
+| Deployment | Render |
+
+---
+
+## 🛠️ Local Setup
 
 ### Prerequisites
-- Node.js 18+
-- A PostgreSQL database (local or [Neon.tech](https://neon.tech) free tier)
+- Node.js ≥ 18
+- A PostgreSQL database (e.g., [Neon.tech](https://neon.tech) — free tier works)
 
-### Steps
-
+### 1. Clone & Install
 ```bash
-# 1. Install dependencies
+git clone <your-repo-url>
+cd identity-reconciliation
 npm install
-
-# 2. Set up environment
-cp .env.example .env
-# Edit .env and set your DATABASE_URL
-
-# 3. Run Prisma migrations
-npx prisma migrate deploy
-
-# 4. Start the dev server
-npm run dev
 ```
 
-Server runs at `http://localhost:3000`
+### 2. Configure Environment
+Create a `.env` file in the root:
+```env
+DATABASE_URL="postgresql://user:password@host/dbname?sslmode=require"
+DIRECT_URL="postgresql://user:password@host-direct/dbname?sslmode=require"
+```
+> `DATABASE_URL` = pooled connection (for the app)  
+> `DIRECT_URL` = direct connection (for migrations)
 
-## 🗄️ Database (PostgreSQL)
+### 3. Initialize the Database
+```bash
+npx prisma migrate dev --name init
+```
 
-This project uses **PostgreSQL** via [Prisma ORM](https://www.prisma.io/).
+### 4. (Optional) Seed Sample Data
+```bash
+npx ts-node prisma/seed.ts
+```
 
-For free hosted PostgreSQL, use:
-- **[Neon.tech](https://neon.tech)** — Recommended. Free serverless Postgres, connect string format: `postgresql://...`
-- **Render PostgreSQL** — Available in Render dashboard when deploying
+### 5. Start Development Server
+```bash
+npm run dev
+```
+Server starts at `http://localhost:3000`
 
-## 🌐 Deploying to Render
+---
 
-1. Push code to GitHub
-2. Go to [Render.com](https://render.com) → **New Web Service** → connect your repo
-3. Set **Build Command**: `npm install && npx prisma migrate deploy && npm run build`
-4. Set **Start Command**: `npm start`
-5. Add environment variable `DATABASE_URL` with your Neon/Render Postgres connection string
+## 🧪 Test the API
+
+Run these in a PowerShell terminal:
+
+```powershell
+# Test 1: Create a new contact
+Invoke-RestMethod -Uri "http://localhost:3000/identify" -Method POST `
+  -ContentType "application/json" `
+  -Body '{"email":"lorraine@hillvalley.edu","phoneNumber":"123456"}'
+
+# Test 2: Link a new phone to existing contact (creates secondary)
+Invoke-RestMethod -Uri "http://localhost:3000/identify" -Method POST `
+  -ContentType "application/json" `
+  -Body '{"email":"lorraine@hillvalley.edu","phoneNumber":"999999"}'
+
+# Test 3: Merge two clusters (triggers primary demotion)
+Invoke-RestMethod -Uri "http://localhost:3000/identify" -Method POST `
+  -ContentType "application/json" `
+  -Body '{"email":"george@hillvalley.edu","phoneNumber":"717171"}'
+```
+
+---
+
+## 🚀 Deployment (Render)
+
+1. Push code to GitHub.
+2. Create a new **Web Service** on [Render](https://render.com).
+3. Set the following:
+   - **Build Command:** `npm install && npx prisma generate && npm run build`
+   - **Start Command:** `npm start`
+4. Add these **Environment Variables** in the Render dashboard:
+   - `DATABASE_URL` → your Neon pooled connection string
+   - `DIRECT_URL` → your Neon direct connection string
+5. Deploy!
+
+---
 
 ## 📁 Project Structure
 
 ```
-src/
-├── app.ts                    # Express app setup
-├── server.ts                 # Entry point
-├── routes/
-│   └── identifyRoute.ts      # POST /identify route
-├── controllers/
-│   └── identifyController.ts # Request handler
-├── services/
-│   └── identityService.ts    # Core business logic
-└── prisma/
-    └── prismaClient.ts       # Singleton Prisma client
-prisma/
-└── schema.prisma             # Database schema
+├── prisma/
+│   ├── schema.prisma       # Database schema (Contact model → image_reconcilation table)
+│   ├── seed.ts             # Sample data seeder
+│   └── migrations/         # Migration history
+├── prisma.config.ts        # Prisma v7 configuration (URLs, adapter)
+├── src/
+│   ├── app.ts              # Express app setup
+│   ├── server.ts           # Entry point
+│   ├── controllers/
+│   │   └── identifyController.ts
+│   ├── routes/
+│   │   └── identifyRoute.ts
+│   ├── services/
+│   │   └── identityService.ts  # Core reconciliation logic
+│   └── prisma/
+│       └── prismaClient.ts     # Prisma client singleton
+├── .env                    # Local environment variables (not committed)
+├── tsconfig.json
+└── package.json
 ```
-
-## 🔑 Key Logic
-
-- **New contact**: Creates a `primary` contact
-- **Existing contact with new info**: Creates a `secondary` contact linked to the primary
-- **Two separate primaries linked**: Older one stays `primary`, newer is **demoted to `secondary`**

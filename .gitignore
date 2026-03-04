@@ -1,5 +1,9 @@
 node_modules
-# Keep environment variables out of version control
+dist
 .env
+*.db
+*.db-journal
 
-/generated/prisma
+# OS files
+.DS_Store
+Thumbs.db

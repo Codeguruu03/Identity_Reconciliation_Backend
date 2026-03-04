@@ -1,13 +1,17 @@
 {
-  "name": "bitspeed_assignment",
+  "name": "identity-reconciliation",
   "version": "1.0.0",
-  "description": "Bitespeed Identity Reconciliation Backend",
+  "description": "Identity Reconciliation Backend API",
   "main": "dist/server.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "seed": "ts-node prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "ts-node prisma/seed.ts"
   },
   "author": "",
   "license": "ISC",
