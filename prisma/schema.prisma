@@ -2,12 +2,10 @@ datasource db {
   provider = "postgresql"
 }
 
-
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["driverAdapters"]
 }
-
 
 model Contact {
  id             Int       @id @default(autoincrement())
